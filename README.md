@@ -7,8 +7,11 @@ Solution to exercise 45 from http://www.ling.gu.se/~lager/python_exercises.html,
 A certain childrens game involves starting with a word in a particular category. Each participant in turn says a word, but that word must begin with the final letter of the previous word. Once a word has been given, it cannot be repeated. If an opponent cannot give a word in the category, they fall out of the game. For example, with "animals" as the category,
 
 Child 1: dog 
+
 Child 2: goldfish
+
 Child 1: hippopotamus
+
 Child 2: snake
 ...
 
@@ -25,4 +28,8 @@ tyrogue vigoroth vulpix wailord wartortle whismur wingull yamask
 
 """
 
-Takes about 5 million calls to process 70 Pokemon.
+Notes:
+
+Takes about 5 million calls to process 70 Pokemon. 
+
+Running time for even 151 Pokemon seems to be far too much. Will look into dynamic programming/efficient longest-path algorithms to improve on this!
