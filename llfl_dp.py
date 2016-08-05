@@ -19,18 +19,18 @@ porygonz registeel relicanth remoraid rufflet sableye scolipede scrafty seaking
 sealeo silcoon simisear snivy snorlax spoink starly tirtouga trapinch treecko
 tyrogue vigoroth vulpix wailord wartortle whismur wingull yamask
 
+---
+
+Attempted to improve solution using "dynamic programming". Didn't work for 151 Pokemon -- uses too much memory.
+
 """
 
 import inspect
 import pdb
 from bulba_parse import get_pokemon_list
 import sys
-from multiprocessing import Process, Queue
 from time import clock
-
-POISON_PILL = 'POISON_PILL'
-PROCESSES_COUNT = 12
-CALLS_GAP = 1000000
+from collections import defaultdict
 
 args = sys.argv[1:]
 
@@ -38,7 +38,7 @@ use_all_names = False
 
 for arg in args:
     if arg == '-h' or arg == '--help':
-        print('usage: {0} [-h] [--all]\n\n'.format(sys.argv[0]) +
+        print('usage: {0} [-h] [--all]\n\n' +
               'Solves LLFL (last letter-first letter) problem.\n' + 
               'See exercise 45 at http://www.ling.gu.se/~lager/python_exercises.html\n\n' + 
               'optional arguments:\n' +
@@ -59,6 +59,12 @@ class Pokemon:
     def __init__(self, name, all_candidates, match_function):
         # match_function must take two arguments
         self.name = name
+        if name != '':
+            self.first_letter = name[0]
+            self.last_letter = name[-1]
+        else:
+            self.last_letter = ''
+            self.first_letter = ''
         self.matches = dict()
         for candidate in all_candidates:
             if match_function(name, candidate):
@@ -226,7 +232,7 @@ class StackBuster:
         print("Max stack frames: {0}".format(self.max_stack_frames))
         print("Total calls: {0:,}".format(self.total_calls))
 
-    def fast_pokemon_stack_buster(self, root_pokemon, already_used_candidates, track_total_calls=True):
+    def fast_pokemon_stack_buster(self, root_pokemon, already_used_candidates):
         """Returns longest last letter-first letter sequence starting with root_pokemon formed from curr_candidates dictionary.
 
         curr_candidates: Dictionary containing all candidates, except those that are already in the sequence.
@@ -235,10 +241,9 @@ class StackBuster:
         Builds longest sequence "backwards".
         USE THIS! Faster than other stack buster methods.
         """
-        if track_total_calls:
-            self.total_calls += 1
-            if not self.total_calls % 1000000:
-                print("Made {0:,} calls so far.".format(self.total_calls))
+        self.total_calls += 1
+        if not self.total_calls % 1000000:
+            print("Made {0:,} calls so far.".format(self.total_calls))
         # Keep track of number of open stack frames, just for fun
         # Using this is crazy slow, don't use this.
         #if len(inspect.stack()) > self.lib_max_stack_frames:
@@ -251,7 +256,6 @@ class StackBuster:
         #print("root: {0}".format(root_pokemon))
         #pdb.set_trace()
 
-        #print("Root:", root_pokemon.name)
         sequences = []
         for match in root_pokemon.matches:
             if match not in already_used_candidates:
@@ -262,7 +266,7 @@ class StackBuster:
                 next_already_used_candidates[match] = None
                 next_root = self.all_candidates[match]
                 #pdb.set_trace()
-                sequences.append(self.fast_pokemon_stack_buster(next_root, next_already_used_candidates, track_total_calls))
+                sequences.append(self.fast_pokemon_stack_buster(next_root, next_already_used_candidates))
 
         self.stack_frames -= 1
 
@@ -280,47 +284,94 @@ class StackBuster:
         print("Max stack frames: {0}".format(self.max_stack_frames))
         print("Total calls: {0:,}".format(self.total_calls))
 
-    def multi_stack_buster(self, in_queue, out_queue):
-        """Returns longest last letter-first letter sequence starting with root_pokemon formed from curr_candidates dictionary.
+    def generate_sequences(self, stop_at=None):
+        """Iteratively generates sequences of length stop_at by "induction".
 
-        curr_candidates: Dictionary containing all candidates, except those that are already in the sequence.
-
-        A recursive function that will probably kill your stack if you try to catch'em all.
-        Builds longest sequence "backwards".
-        USE THIS! Faster than other stack buster methods.
+        Starting at i = 1:
+            Generate all valid sequences of length 1 by trying to add each candidate to each valid sequence of length i - 1.
+            Delete sequences of length i - 1.
+            Loop, unless i == stop_at or no valid sequences of length i exist.
         """
-        while not in_queue.empty():
-            task = in_queue.get()
-            if task == POISON_PILL:
-                out_queue.put(POISON_PILL)
-                return
+        if stop_at is not None and stop_at < 1:
+            raise ValueError("stop_at must be None or an integer >= 1")
+        
+        # Initialize last_sequences to have all sequences of length 1
+        last_sequences = defaultdict(list)
+        for pokemon_name in self.all_candidates:
+            poke_sequence = PokeSequence([pokemon_name])
+            last_sequences[poke_sequence.first_letter_in_head].append(poke_sequence)
+        
+        if stop_at is not None and stop_at == 1:
+            return last_sequences 
 
-            print("Starting task:", task)
-            self.total_calls = 0
-            self.max_stack_frames = 0
-            next_already_used_candidates = dict()
-            next_already_used_candidates[task.name] = None
-            # Don't call multi version for now
-            result = self.fast_pokemon_stack_buster(task, next_already_used_candidates, False)
-            print("Finishing task:", task)
-            out_queue.put((result, self.total_calls, self.max_stack_frames))
+        # Initialize curr_length and data for printing percentage of progress
+        curr_length = 2
+        candidates_total = len(self.all_candidates)
+        thresholds = dict()
+        num_thresholds = 5
+        for i in range(1, num_thresholds):
+            thresholds[int(candidates_total * i / num_thresholds)] = i
+        thresholds[candidates_total] = num_thresholds
+        while True:
+            print("Current length:", curr_length)
+            num_processed = 0
+            num_sequences = 0
+            # Maps (first letter of head h) -> (list of sequences starting with head h)
+            curr_sequences = defaultdict(list)
+            for pokemon_name in self.all_candidates:
+                last_letter = pokemon_name[-1]
+                if last_letter in last_sequences:
+                    matching_sequences_list = last_sequences[last_letter]
+                    for matching_sequence in matching_sequences_list:
+                        if pokemon_name not in matching_sequence.member_set:
+                            poke_sequence = PokeSequence([pokemon_name] + matching_sequence.as_list)
+                            curr_sequences[poke_sequence.first_letter_in_head].append(poke_sequence)
+                            num_sequences += 1
+                
+                num_processed += 1
+                if num_processed in thresholds:
+                    # {0:.1%} --> first (0) argument as percentage (%) with one digit after period (.1), using at least 6 characters (6)
+                    # Note that 100.0% is six characters, so we pad everything else to be aligned with that
+                    print("Processed {0:6.1%} of all candidates!".format(thresholds[num_processed] / num_thresholds))
 
-class MultiStackBuster(Process):
-    def __init__(self, in_queue, out_queue, all_candidates):
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-        self.sb = StackBuster(all_candidates)
-        Process.__init__(self)
+            if len(curr_sequences) < 1:
+                return last_sequences
+            elif curr_length == stop_at:
+                return curr_sequences
 
-    def run(self):
-        try:
-            print("In", self.name)
-            self.sb.multi_stack_buster(self.in_queue, self.out_queue)
-            print("Exiting", self.name)
-        except Exception as e:
-            self.out_queue.put(POISON_PILL)
-            raise e
+            print("Storing {0:,} PokeSequences each of size {1:,} (in bytes),".format(num_sequences, poke_sequence.__sizeof__() + poke_sequence.as_list.__sizeof__()))
+            print("For a total of {0:,} bytes.".format(num_sequences * (poke_sequence.__sizeof__() + poke_sequence.as_list.__sizeof__())))
+            #print(curr_sequences.__sizeof__(), "bytes")
+            #cs = curr_sequences
+            #pdb.set_trace()
 
+            del last_sequences # Redundant? I don't know. Just get rid of it!
+            last_sequences = curr_sequences
+
+            curr_length += 1
+
+
+    def single_solve_llfl(self):
+        p = self.all_candidates['zapdos']
+        d = dict()
+        d[p.name] = None
+        longest_sequence = self.fast_pokemon_stack_buster(p, d)
+        print("Max length: {0}".format(len(longest_sequence)))
+        print("Max sequence: ")
+        print(longest_sequence)
+        print("Current stack frames: {0}".format(self.stack_frames))
+        print("Max stack frames: {0}".format(self.max_stack_frames))
+        print("Total calls: {0:,}".format(self.total_calls))
+
+class PokeSequence:
+    # TODO: Reduce memory usage by compressing PokeSequences? Store compressed lists?
+    def __init__(self, pokemon_name_list):
+        self.as_list = pokemon_name_list
+        self.first_letter_in_head = pokemon_name_list[0][0]
+        self.member_set = frozenset(pokemon_name_list)
+
+    def __repr__(self):
+        return "PokeSequence: {0}".format(self.as_list)
 
 if __name__ == '__main__':
 
@@ -347,64 +398,21 @@ if __name__ == '__main__':
     for pokemon_name in pokemon_list:
         pokemon_dict[pokemon_name] = Pokemon(pokemon_name, pokemon_list, is_llfl_match)
 
-    in_queue = Queue()
-    out_queue = Queue()
-
-    for pokemon_name in pokemon_dict:
-        in_queue.put(pokemon_dict[pokemon_name])
-
-    for i in range(PROCESSES_COUNT):
-        in_queue.put(POISON_PILL)
-
-    print("Starting processes...")
-
-    process_list = []
-
-    for i in range(PROCESSES_COUNT):
-        process = MultiStackBuster(in_queue, out_queue, pokemon_dict)
-        process_list.append(process)
-        process.start()
-
-    # Watch processes
-    alive_processes = PROCESSES_COUNT
-    max_sequence = []
-    max_length = 0
-    total_calls = 0
-    max_stack_frames = 0
-    calls_threshold = CALLS_GAP
-    while alive_processes > 0:
-        result = out_queue.get()
-        if result == POISON_PILL:
-            alive_processes -= 1
-        else:
-            # Check sequence
-            sequence = result[0]
-            if len(sequence) > max_length:
-                max_sequence = sequence
-                max_length = len(sequence)
-            # Check calls
-            total_calls += result[1]
-            if total_calls > calls_threshold:
-                while total_calls > calls_threshold:
-                    calls_threshold += CALLS_GAP
-                print("Made {0:,} calls so far.".format(total_calls))
-                
-            # Check stack frames
-            stack_frames = result[2]
-            if stack_frames > max_stack_frames:
-                max_stack_frames = stack_frames
-
-    # Join processes
-    print("Joining processes...")
-    for process in process_list:
-        process.join()
-
-    # Print final results
-    print("Max length: {0}".format(max_length))
-    print("Max sequence: ")
-    print(max_sequence)
-    print("Max stack frames: {0}".format(max_stack_frames))
-    print("Total calls: {0:,}".format(total_calls))
+    sb = StackBuster(pokemon_dict)
+    result = sb.generate_sequences()
+    total = 0
+    length = 0
+    for key in result:
+        for elt in result[key]:
+            total += 1
+            length = len(elt.as_list)
+    print(total)
+    print(length)
+    #sb.single_solve_llfl()
+    #sb.fast_pokemon_solve_llfl()
+    #sb.pokemon_solve_llfl()
+    #sb.solve_llfl()
+    #sb.fast_solve_llfl()
 
     end_time = clock()
 

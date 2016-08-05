@@ -19,18 +19,17 @@ porygonz registeel relicanth remoraid rufflet sableye scolipede scrafty seaking
 sealeo silcoon simisear snivy snorlax spoink starly tirtouga trapinch treecko
 tyrogue vigoroth vulpix wailord wartortle whismur wingull yamask
 
+---
+
+Attempted to improve solution using caching. Didn't work for 151 Pokemon!
+
 """
 
 import inspect
 import pdb
 from bulba_parse import get_pokemon_list
 import sys
-from multiprocessing import Process, Queue
 from time import clock
-
-POISON_PILL = 'POISON_PILL'
-PROCESSES_COUNT = 12
-CALLS_GAP = 1000000
 
 args = sys.argv[1:]
 
@@ -38,7 +37,7 @@ use_all_names = False
 
 for arg in args:
     if arg == '-h' or arg == '--help':
-        print('usage: {0} [-h] [--all]\n\n'.format(sys.argv[0]) +
+        print('usage: {0} [-h] [--all]\n\n' +
               'Solves LLFL (last letter-first letter) problem.\n' + 
               'See exercise 45 at http://www.ling.gu.se/~lager/python_exercises.html\n\n' + 
               'optional arguments:\n' +
@@ -67,6 +66,9 @@ class Pokemon:
     def get_matches(self):
         return self.matches
 
+    def get_last_letter(self):
+        return self.name[-1]
+
     def __hash__(self):
         return hash(self.name)
 
@@ -86,6 +88,9 @@ class StackBuster:
         self.max_stack_frames = 0
         self.lib_max_stack_frames = 0
         self.total_calls = 0
+        self.pokesets_dict = dict() # Maps (last letter) -> auc_set -> sequence
+        self.cache_hits = 0
+        self.full_calls = 0
 
     def stack_buster(self, root_word, curr_candidates):
         """Returns longest last letter-first letter sequence starting with root_word formed from curr_candidates dictionary.
@@ -226,7 +231,7 @@ class StackBuster:
         print("Max stack frames: {0}".format(self.max_stack_frames))
         print("Total calls: {0:,}".format(self.total_calls))
 
-    def fast_pokemon_stack_buster(self, root_pokemon, already_used_candidates, track_total_calls=True):
+    def fast_pokemon_stack_buster(self, root_pokemon, already_used_candidates):
         """Returns longest last letter-first letter sequence starting with root_pokemon formed from curr_candidates dictionary.
 
         curr_candidates: Dictionary containing all candidates, except those that are already in the sequence.
@@ -235,10 +240,12 @@ class StackBuster:
         Builds longest sequence "backwards".
         USE THIS! Faster than other stack buster methods.
         """
-        if track_total_calls:
-            self.total_calls += 1
-            if not self.total_calls % 1000000:
-                print("Made {0:,} calls so far.".format(self.total_calls))
+        self.total_calls += 1
+        if not self.total_calls % 1000000:
+            print("Made {0:,} calls so far.".format(self.total_calls))
+            print("Cache hits so far:", self.cache_hits)
+            print("Cached PokeSets:", len(self.pokesets_dict))
+            print("Unoptimized calls:", self.full_calls)
         # Keep track of number of open stack frames, just for fun
         # Using this is crazy slow, don't use this.
         #if len(inspect.stack()) > self.lib_max_stack_frames:
@@ -251,8 +258,60 @@ class StackBuster:
         #print("root: {0}".format(root_pokemon))
         #pdb.set_trace()
 
-        #print("Root:", root_pokemon.name)
+        # Do memoization. Fun times
+        # TODO: Refactor pokeset, because it doesn't need to be frozen?
+        pokeset = PokeSet(root_pokemon.matches, already_used_candidates)
+        if len(pokeset) == 0:
+            return [root_pokemon]
+        # Optimization for singleton
+        if len(pokeset) == 1:
+            singleton, = pokeset # Bizarrely enough, this is valid syntax, where frozenset acts as a tuple
+            return [root_pokemon, singleton]
+        # Optimization for pairs
+        if len(pokeset) == 2:
+            first_pokemon, second_pokemon = pokeset
+            if is_llfl_match(first_pokemon, second_pokemon):
+                return [root_pokemon, first_pokemon, second_pokemon]
+            elif is_llfl_match(second_pokemon, first_pokemon):
+                return [root_pokemon, second_pokemon, first_pokemon]
+            else:
+                return [root_pokemon, first_pokemon]
+
+        auc_set = frozenset(already_used_candidates) # already_used_candidates set
+        if root_pokemon.get_last_letter() in self.pokesets_dict:
+            # Check if auc_set is exactly in dict
+            auc_dict = self.pokesets_dict[root_pokemon.get_last_letter()]
+            if auc_set in auc_dict:
+                self.cache_hits += 1
+                return [root_pokemon] + auc_dict[auc_set]
+            # Else, look for subsets of this auc_set. If you find any, then this sequence can be no longer than the one already found,
+            # since we have less candidates available to us and are starting from the same point.
+            # The length of the current sequence is len(already_used_candidates) or len(auc_set).
+            #max_dict_sequence = []
+            #for dict_set in auc_dict:
+            #    if dict_set.issubset(auc_set) and len(auc_dict[dict_set]) > len(max_dict_sequence):
+            #        max_dict_sequence = auc_dict[dict_set]
+            #        max_dict_set = dict_set
+
+            #print(pokeset)
+            #print(self.pokesets_dict[pokeset])
+            #pdb.set_trace()
+            #print("Found cached sequence!", self.cache_hits)
+            #return [root_pokemon] + self.pokesets_dict[pokeset]
+        else:
+            # Make sure dict exists
+            self.pokesets_dict[root_pokemon.get_last_letter()] = dict()
+
+        self.full_calls += 1
+
         sequences = []
+        for pokemon_name in pokeset:
+            next_already_used_candidates = already_used_candidates.copy()
+            next_already_used_candidates[pokemon_name] = None
+            next_root = self.all_candidates[pokemon_name]
+            #pdb.set_trace()
+            sequences.append(self.fast_pokemon_stack_buster(next_root, next_already_used_candidates))   
+        '''
         for match in root_pokemon.matches:
             if match not in already_used_candidates:
                 #print("mtch: {0}".format(match))
@@ -262,14 +321,20 @@ class StackBuster:
                 next_already_used_candidates[match] = None
                 next_root = self.all_candidates[match]
                 #pdb.set_trace()
-                sequences.append(self.fast_pokemon_stack_buster(next_root, next_already_used_candidates, track_total_calls))
-
+                sequences.append(self.fast_pokemon_stack_buster(next_root, next_already_used_candidates))
+        '''
+ 
         self.stack_frames -= 1
 
         if len(sequences) < 1:
+            #self.pokesets_dict[pokeset] = []
+            #self.pokesets_dict[root_pokemon.get_last_letter()][auc_set] = []
             return [root_pokemon]
         else:
-            return [root_pokemon] + max(sequences, key=len)     
+            max_sequence = max(sequences, key=len)
+            self.pokesets_dict[root_pokemon.get_last_letter()][auc_set] = max_sequence
+            #self.pokesets_dict[pokeset] = max_sequence
+            return [root_pokemon] + max_sequence
 
     def fast_pokemon_solve_llfl(self):
         longest_sequence = self.fast_pokemon_stack_buster(Pokemon('', self.all_candidates, hacky_is_llfl_match), dict())[1:]
@@ -280,46 +345,29 @@ class StackBuster:
         print("Max stack frames: {0}".format(self.max_stack_frames))
         print("Total calls: {0:,}".format(self.total_calls))
 
-    def multi_stack_buster(self, in_queue, out_queue):
-        """Returns longest last letter-first letter sequence starting with root_pokemon formed from curr_candidates dictionary.
+    def single_solve_llfl(self):
+        p = self.all_candidates['zapdos']
+        d = dict()
+        d[p.name] = None
+        longest_sequence = self.fast_pokemon_stack_buster(p, d)
+        print("Max length: {0}".format(len(longest_sequence)))
+        print("Max sequence: ")
+        print(longest_sequence)
+        print("Current stack frames: {0}".format(self.stack_frames))
+        print("Max stack frames: {0}".format(self.max_stack_frames))
+        print("Total calls: {0:,}".format(self.total_calls))
+        print("Cache hits:", self.cache_hits)
 
-        curr_candidates: Dictionary containing all candidates, except those that are already in the sequence.
+class PokeSet(frozenset):
+    def __new__(cls, match_dict, already_used_candidates):
+        remainder_list = []
+        for match in match_dict:
+            if match not in already_used_candidates:
+                remainder_list.append(match)
+        return frozenset.__new__(cls, remainder_list)
 
-        A recursive function that will probably kill your stack if you try to catch'em all.
-        Builds longest sequence "backwards".
-        USE THIS! Faster than other stack buster methods.
-        """
-        while not in_queue.empty():
-            task = in_queue.get()
-            if task == POISON_PILL:
-                out_queue.put(POISON_PILL)
-                return
-
-            print("Starting task:", task)
-            self.total_calls = 0
-            self.max_stack_frames = 0
-            next_already_used_candidates = dict()
-            next_already_used_candidates[task.name] = None
-            # Don't call multi version for now
-            result = self.fast_pokemon_stack_buster(task, next_already_used_candidates, False)
-            print("Finishing task:", task)
-            out_queue.put((result, self.total_calls, self.max_stack_frames))
-
-class MultiStackBuster(Process):
-    def __init__(self, in_queue, out_queue, all_candidates):
-        self.in_queue = in_queue
-        self.out_queue = out_queue
-        self.sb = StackBuster(all_candidates)
-        Process.__init__(self)
-
-    def run(self):
-        try:
-            print("In", self.name)
-            self.sb.multi_stack_buster(self.in_queue, self.out_queue)
-            print("Exiting", self.name)
-        except Exception as e:
-            self.out_queue.put(POISON_PILL)
-            raise e
+    def __init__(self, match_dict, already_used_candidates):
+        frozenset.__init__(self)
 
 
 if __name__ == '__main__':
@@ -347,64 +395,12 @@ if __name__ == '__main__':
     for pokemon_name in pokemon_list:
         pokemon_dict[pokemon_name] = Pokemon(pokemon_name, pokemon_list, is_llfl_match)
 
-    in_queue = Queue()
-    out_queue = Queue()
-
-    for pokemon_name in pokemon_dict:
-        in_queue.put(pokemon_dict[pokemon_name])
-
-    for i in range(PROCESSES_COUNT):
-        in_queue.put(POISON_PILL)
-
-    print("Starting processes...")
-
-    process_list = []
-
-    for i in range(PROCESSES_COUNT):
-        process = MultiStackBuster(in_queue, out_queue, pokemon_dict)
-        process_list.append(process)
-        process.start()
-
-    # Watch processes
-    alive_processes = PROCESSES_COUNT
-    max_sequence = []
-    max_length = 0
-    total_calls = 0
-    max_stack_frames = 0
-    calls_threshold = CALLS_GAP
-    while alive_processes > 0:
-        result = out_queue.get()
-        if result == POISON_PILL:
-            alive_processes -= 1
-        else:
-            # Check sequence
-            sequence = result[0]
-            if len(sequence) > max_length:
-                max_sequence = sequence
-                max_length = len(sequence)
-            # Check calls
-            total_calls += result[1]
-            if total_calls > calls_threshold:
-                while total_calls > calls_threshold:
-                    calls_threshold += CALLS_GAP
-                print("Made {0:,} calls so far.".format(total_calls))
-                
-            # Check stack frames
-            stack_frames = result[2]
-            if stack_frames > max_stack_frames:
-                max_stack_frames = stack_frames
-
-    # Join processes
-    print("Joining processes...")
-    for process in process_list:
-        process.join()
-
-    # Print final results
-    print("Max length: {0}".format(max_length))
-    print("Max sequence: ")
-    print(max_sequence)
-    print("Max stack frames: {0}".format(max_stack_frames))
-    print("Total calls: {0:,}".format(total_calls))
+    sb = StackBuster(pokemon_dict)
+    sb.single_solve_llfl()
+    #sb.fast_pokemon_solve_llfl()
+    #sb.pokemon_solve_llfl()
+    #sb.solve_llfl()
+    #sb.fast_solve_llfl()
 
     end_time = clock()
 
