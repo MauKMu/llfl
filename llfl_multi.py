@@ -19,6 +19,10 @@ porygonz registeel relicanth remoraid rufflet sableye scolipede scrafty seaking
 sealeo silcoon simisear snivy snorlax spoink starly tirtouga trapinch treecko
 tyrogue vigoroth vulpix wailord wartortle whismur wingull yamask
 
+---
+
+Attempted to improve solution using multiprocessing. Didn't work for 151 Pokemon!
+
 """
 
 import inspect
